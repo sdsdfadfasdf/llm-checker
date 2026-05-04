@@ -164,4 +164,11 @@ if (require.main === module) {
   run(path);
 }
 
-module.exports = { classifyAllModels, classifyModel };
+module.exports = {
+  classifyAllModels,
+  classifyModel,
+  toText,
+  regexRules,
+  choosePrimary,
+  CANON
+};

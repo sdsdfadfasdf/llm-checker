@@ -617,12 +617,26 @@ class DeterministicModelSelector {
      * 1) Prefer complete Ollama scraped cache (all families/sizes)
      * 2) Fallback to static curated catalog
      */
-    async loadModelPool() {
+    async loadModelPool(source = 'all') {
         const cacheModels = await this.loadOllamaCacheModels();
         if (cacheModels.length > 0) {
-            return cacheModels;
+            return this.filterModelsBySource(cacheModels, source);
         }
-        return this.loadCatalog();
+
+        const catalogModels = await this.loadCatalog();
+        return this.filterModelsBySource(catalogModels, source);
+    }
+
+    filterModelsBySource(models, source) {
+        if (source === 'all') {
+            return models;
+        }
+
+        const sourceFilter = source.toLowerCase();
+        return models.filter(model => {
+            const modelSource = (model.source || 'ollama').toLowerCase();
+            return modelSource === sourceFilter;
+        });
     }
 
     async loadOllamaCacheModels() {
@@ -1391,6 +1405,7 @@ class DeterministicModelSelector {
             silent = false,
             optimizeFor = 'balanced',
             runtime = 'ollama',
+            source = 'all', // New: source filter (ollama, huggingface, all)
             hardware: providedHardware = null,
             installedModels = null,
             modelPool = null
@@ -1415,7 +1430,7 @@ class DeterministicModelSelector {
             ? (modelPool.some(model => typeof model?.paramsB === 'number' && model?.model_identifier)
                 ? modelPool
                 : this.normalizeExternalModels(modelPool))
-            : await this.loadModelPool();
+            : await this.loadModelPool(source);
         
         if (!silent) {
             const memoryGB = hardware?.memory?.totalGB ?? hardware?.memory?.total ?? 0;
@@ -1557,9 +1572,13 @@ class DeterministicModelSelector {
         const F = this.calculateFitScore(requiredGB, budget);
         const C = this.calculateContextScore(model, targetCtx);
 
-        // 4. Calculate final weighted score
+        // 4. Calculate source-aware adjustments
+        const sourceAdjustment = this.calculateSourceAdjustment(model, category);
+
+        // 5. Calculate final weighted score
         const weights = this.getScoringWeights(category, optimizeFor);
-        const score = Math.round((Q * weights[0] + S * weights[1] + F * weights[2] + C * weights[3]) * 10) / 10;
+        const baseScore = Q * weights[0] + S * weights[1] + F * weights[2] + C * weights[3];
+        const score = Math.round((baseScore + sourceAdjustment) * 10) / 10;
 
         // 5. Build rationale
         const rationale = this.buildRationale(
@@ -1895,6 +1914,36 @@ class DeterministicModelSelector {
         if (model.ctxMax >= targetCtx) return 100;
         if (model.ctxMax >= targetCtx * 0.5) return 70;
         return 0; // Should be filtered out earlier
+    }
+
+    calculateSourceAdjustment(model, category) {
+        const source = (model.source || 'ollama').toLowerCase();
+
+        // Source-specific adjustments
+        const sourceAdjustments = {
+            'ollama': 0, // Baseline
+            'huggingface': -2, // Slight penalty for HF models (may need download)
+            'ollama_database': 0,
+            'cache': 0
+        };
+
+        // Category-specific source adjustments
+        const categorySourceAdjustments = {
+            'coding': {
+                'huggingface': -1 // HF models often good for coding
+            },
+            'embeddings': {
+                'huggingface': 2 // HF has excellent embedding models
+            },
+            'multimodal': {
+                'huggingface': 1 // HF has strong multimodal support
+            }
+        };
+
+        const baseAdjustment = sourceAdjustments[source] || 0;
+        const categoryAdjustment = categorySourceAdjustments[category]?.[source] || 0;
+
+        return baseAdjustment + categoryAdjustment;
     }
 
     estimatePracticalMaxParamsForBudget(budgetGB) {

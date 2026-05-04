@@ -1,17 +1,31 @@
 /**
  * Sync Manager - Coordinates scraping and database updates
- * Handles initial sync and incremental updates
+ * Handles initial sync and incremental updates for multiple sources
  */
 
 const ModelDatabase = require('./model-database');
 const EnhancedOllamaScraper = require('../ollama/enhanced-scraper');
+const HuggingFaceScraper = require('../huggingface/hf-scraper');
 
 class SyncManager {
     constructor(options = {}) {
         this.db = options.database || new ModelDatabase();
-        this.scraper = options.scraper || new EnhancedOllamaScraper({
+
+        // Ollama scraper
+        this.ollamaScraper = options.ollamaScraper || new EnhancedOllamaScraper({
             concurrency: options.concurrency || 5,
             rateLimitMs: options.rateLimitMs || 200,
+            onProgress: options.onProgress || this.defaultOnProgress.bind(this),
+            onError: options.onError || console.error
+        });
+
+        // Hugging Face scraper
+        this.hfScraper = options.hfScraper || new HuggingFaceScraper({
+            concurrency: options.hfConcurrency || 3,
+            rateLimitMs: options.hfRateLimitMs || 1000,
+            maxModels: options.hfMaxModels || 10000,
+            minDownloads: options.hfMinDownloads || 1000,
+            minLikes: options.hfMinLikes || 10,
             onProgress: options.onProgress || this.defaultOnProgress.bind(this),
             onError: options.onError || console.error
         });
@@ -40,6 +54,77 @@ class SyncManager {
     }
 
     /**
+     * Sync from specific source
+     */
+    async syncSource(source = 'all', options = {}) {
+        await this.init();
+
+        if (source === 'all' || source === 'ollama') {
+            await this.syncOllama(options);
+        }
+
+        if (source === 'all' || source === 'huggingface') {
+            await this.syncHuggingFace(options);
+        }
+
+        return this.db.getStats();
+    }
+
+    /**
+     * Sync Ollama models
+     */
+    async syncOllama(options = {}) {
+        await this.init();
+
+        this.onProgress({ phase: 'start', message: 'Syncing Ollama models...' });
+
+        const result = await this.ollamaScraper.scrapeAll((model, variants) => {
+            model.source = 'ollama';
+            this.db.upsertModel(model);
+
+            for (const variant of variants) {
+                this.db.upsertVariant(variant);
+            }
+        });
+
+        this.db.setLastSyncBySource('ollama', new Date().toISOString());
+
+        this.onProgress({
+            phase: 'complete',
+            message: `Ollama sync complete: ${result.models.length} models, ${result.variants.length} variants`
+        });
+
+        return result;
+    }
+
+    /**
+     * Sync Hugging Face models
+     */
+    async syncHuggingFace(options = {}) {
+        await this.init();
+
+        this.onProgress({ phase: 'start', message: 'Syncing Hugging Face models...' });
+
+        const result = await this.hfScraper.scrapeAll((model, variants) => {
+            model.source = 'huggingface';
+            this.db.upsertModel(model);
+
+            for (const variant of variants) {
+                this.db.upsertVariant(variant);
+            }
+        });
+
+        this.db.setLastSyncBySource('huggingface', new Date().toISOString());
+
+        this.onProgress({
+            phase: 'complete',
+            message: `Hugging Face sync complete: ${result.models.length} models, ${result.variants.length} variants`
+        });
+
+        return result;
+    }
+
+    /**
      * Perform full sync from scratch
      */
     async fullSync() {
@@ -50,25 +135,18 @@ class SyncManager {
         // Clear existing data
         this.db.clear();
 
-        // Scrape all models
-        const result = await this.scraper.scrapeAll((model, variants) => {
-            // Save model as we go
-            this.db.upsertModel(model);
+        // Sync both sources
+        await this.syncOllama();
+        await this.syncHuggingFace();
 
-            // Save variants
-            for (const variant of variants) {
-                this.db.upsertVariant(variant);
-            }
-        });
-
-        // Update sync timestamp
+        // Update overall sync timestamp
         this.db.setLastSync(new Date().toISOString());
 
         const stats = this.db.getStats();
 
         this.onProgress({
             phase: 'complete',
-            message: `Sync complete: ${stats.models} models, ${stats.variants} variants`,
+            message: `Full sync complete: ${stats.models} models, ${stats.variants} variants`,
             stats
         });
 
@@ -90,8 +168,8 @@ class SyncManager {
 
         this.onProgress({ phase: 'start', message: 'Starting incremental sync...' });
 
-        // Get current model list
-        const modelList = await this.scraper.scrapeModelList();
+        // Get current model list from Ollama
+        const ollamaModelList = await this.ollamaScraper.scrapeModelList();
 
         // Get existing models from DB
         const existingModels = new Set(
@@ -99,8 +177,8 @@ class SyncManager {
         );
 
         // Find new and potentially updated models
-        const newModels = modelList.filter(m => !existingModels.has(m.id));
-        const toUpdate = modelList.filter(m => existingModels.has(m.id));
+        const newModels = ollamaModelList.filter(m => !existingModels.has(m.id));
+        const toUpdate = ollamaModelList.filter(m => existingModels.has(m.id));
 
         this.onProgress({
             phase: 'incremental',
@@ -113,12 +191,13 @@ class SyncManager {
         // Process new models
         for (const { id } of newModels) {
             try {
-                const model = await this.scraper.scrapeModelDetails(id);
+                const model = await this.ollamaScraper.scrapeModelDetails(id);
                 if (model) {
+                    model.source = 'ollama';
                     this.db.upsertModel(model);
                     added++;
 
-                    const variants = await this.scraper.scrapeModelTags(id);
+                    const variants = await this.ollamaScraper.scrapeModelTags(id);
                     for (const variant of variants) {
                         this.db.upsertVariant(variant);
                     }
@@ -135,7 +214,7 @@ class SyncManager {
 
         for (const { id } of topModels) {
             try {
-                const model = await this.scraper.scrapeModelDetails(id);
+                const model = await this.ollamaScraper.scrapeModelDetails(id);
                 if (model) {
                     const existing = this.db.get(`SELECT pulls, tags_count FROM models WHERE id = ?`, [id]);
 
@@ -144,9 +223,10 @@ class SyncManager {
                         Math.abs((existing.pulls || 0) - (model.pulls || 0)) > 1000 ||
                         (existing.tags_count || 0) !== (model.tags_count || 0)) {
 
+                        model.source = 'ollama';
                         this.db.upsertModel(model);
 
-                        const variants = await this.scraper.scrapeModelTags(id);
+                        const variants = await this.ollamaScraper.scrapeModelTags(id);
                         for (const variant of variants) {
                             this.db.upsertVariant(variant);
                         }
@@ -181,7 +261,17 @@ class SyncManager {
     async sync(options = {}) {
         await this.init();
 
+        const source = options.source || 'all';
         const force = options.force || false;
+
+        // Sync specific source
+        if (source === 'ollama') {
+            return this.syncOllama({ force });
+        } else if (source === 'huggingface') {
+            return this.syncHuggingFace({ force });
+        }
+
+        // Sync all sources
         const lastSync = this.db.getLastSync();
         const modelCount = this.db.getModelCount();
 

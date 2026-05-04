@@ -81,7 +81,13 @@ class ModelDatabase {
                 url TEXT,
                 last_updated TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT DEFAULT 'ollama',
+                hf_model_id TEXT,
+                hf_author TEXT,
+                hf_likes INTEGER,
+                hf_downloads INTEGER,
+                hf_pipeline_tag TEXT
             );
 
             -- Variants table (each quantization/size combination)
@@ -125,6 +131,9 @@ class ModelDatabase {
             CREATE INDEX IF NOT EXISTS idx_models_family ON models(family);
             CREATE INDEX IF NOT EXISTS idx_models_pulls ON models(pulls DESC);
             CREATE INDEX IF NOT EXISTS idx_models_type ON models(type);
+            CREATE INDEX IF NOT EXISTS idx_models_source ON models(source);
+            CREATE INDEX IF NOT EXISTS idx_models_hf_model_id ON models(hf_model_id);
+            CREATE INDEX IF NOT EXISTS idx_models_hf_author ON models(hf_author);
             CREATE INDEX IF NOT EXISTS idx_variants_params ON variants(params_b);
             CREATE INDEX IF NOT EXISTS idx_variants_size ON variants(size_gb);
             CREATE INDEX IF NOT EXISTS idx_variants_quant ON variants(quant);
@@ -201,8 +210,8 @@ class ModelDatabase {
      */
     upsertModel(model) {
         const sql = `
-            INSERT INTO models (id, name, family, type, description, capabilities, pulls, tags_count, namespace, url, last_updated, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO models (id, name, family, type, description, capabilities, pulls, tags_count, namespace, url, last_updated, updated_at, source, hf_model_id, hf_author, hf_likes, hf_downloads, hf_pipeline_tag)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 family = excluded.family,
@@ -214,7 +223,13 @@ class ModelDatabase {
                 namespace = excluded.namespace,
                 url = excluded.url,
                 last_updated = excluded.last_updated,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = CURRENT_TIMESTAMP,
+                source = excluded.source,
+                hf_model_id = excluded.hf_model_id,
+                hf_author = excluded.hf_author,
+                hf_likes = excluded.hf_likes,
+                hf_downloads = excluded.hf_downloads,
+                hf_pipeline_tag = excluded.hf_pipeline_tag
         `;
 
         this.run(sql, [
@@ -228,7 +243,13 @@ class ModelDatabase {
             model.tags_count || 0,
             model.namespace || '',
             model.url || `https://ollama.com/library/${model.id}`,
-            model.last_updated || ''
+            model.last_updated || '',
+            model.source || 'ollama',
+            model.hf_model_id || null,
+            model.hf_author || null,
+            model.hf_likes || null,
+            model.hf_downloads || null,
+            model.hf_pipeline_tag || null
         ]);
     }
 
@@ -370,6 +391,12 @@ class ModelDatabase {
         if (filters.type) {
             sql += ` AND m.type = ?`;
             params.push(filters.type);
+        }
+
+        // Source filter
+        if (filters.source) {
+            sql += ` AND m.source = ?`;
+            params.push(filters.source);
         }
 
         // Capability filter
@@ -560,8 +587,18 @@ class ModelDatabase {
     /**
      * Export the synced SQLite catalog in the shape expected by recommendation engines.
      */
-    getAllModelsWithVariants() {
-        const models = this.all(`SELECT * FROM models ORDER BY pulls DESC, id ASC`);
+    getAllModelsWithVariants(source = null) {
+        let sql = `SELECT * FROM models`;
+        const params = [];
+
+        if (source && source !== 'all') {
+            sql += ` WHERE source = ?`;
+            params.push(source);
+        }
+
+        sql += ` ORDER BY pulls DESC, id ASC`;
+
+        const models = this.all(sql, params);
         const variants = this.all(`SELECT * FROM variants ORDER BY model_id ASC, params_b DESC, size_gb ASC`);
         const variantsByModel = new Map();
 
@@ -602,6 +639,9 @@ class ModelDatabase {
                 capabilityList.find((cap) => ['coding', 'reasoning', 'multimodal', 'embeddings', 'creative', 'chat'].includes(cap)) ||
                 (capabilityList.includes('multimodal') ? 'multimodal' : 'general');
 
+            const modelSource = model.source || 'ollama';
+            const registry = modelSource === 'huggingface' ? 'huggingface.co' : 'ollama.com';
+
             return {
                 id: model.id,
                 model_identifier: model.id,
@@ -622,11 +662,17 @@ class ModelDatabase {
                 last_updated: model.last_updated || '',
                 updated_at: model.updated_at || '',
                 variants: variantsByModel.get(model.id) || [],
-                source: 'ollama_sqlite_database',
-                registry: 'ollama.com',
+                source: modelSource,
+                registry: registry,
                 version: model.updated_at || model.last_updated || 'unknown',
                 license: 'unknown',
-                digest: 'unknown'
+                digest: 'unknown',
+                // HF-specific fields
+                hf_model_id: model.hf_model_id || null,
+                hf_author: model.hf_author || null,
+                hf_likes: model.hf_likes || 0,
+                hf_downloads: model.hf_downloads || 0,
+                hf_pipeline_tag: model.hf_pipeline_tag || null
             };
         });
     }
@@ -659,6 +705,14 @@ class ModelDatabase {
     }
 
     /**
+     * Get last sync timestamp for specific source
+     */
+    getLastSyncBySource(source = 'ollama') {
+        const result = this.get(`SELECT value FROM sync_meta WHERE key = ?`, [`${source}_last_sync`]);
+        return result ? result.value : null;
+    }
+
+    /**
      * Set last sync timestamp
      */
     setLastSync(timestamp) {
@@ -669,6 +723,19 @@ class ModelDatabase {
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP
         `, [timestamp]);
+    }
+
+    /**
+     * Set last sync timestamp for specific source
+     */
+    setLastSyncBySource(source, timestamp) {
+        this.run(`
+            INSERT INTO sync_meta (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+        `, [`${source}_last_sync`, timestamp]);
     }
 
     /**

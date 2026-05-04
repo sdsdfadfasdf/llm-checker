@@ -4164,11 +4164,12 @@ Custom hardware:
 
 program
     .command('list-models')
-    .description('List all models from Ollama database')
+    .description('List all models from Ollama and/or Hugging Face databases')
     .option('-c, --category <category>', 'Filter by category (coding, talking, reading, reasoning, multimodal, creative, general)')
     .option('-s, --size <size>', 'Filter by size (small, medium, large, e.g., "7b", "13b")')
     .option('-p, --popular', 'Show only popular models (>100k pulls)')
     .option('-r, --recent', 'Show only recent models (updated in last 30 days)')
+    .option('--source <source>', 'Filter by source (ollama, huggingface, all)', 'all')
     .option('--limit <number>', 'Limit number of results (default: 50)', '50')
     .option('--full', 'Show full details including variants and tags')
     .option('--json', 'Output in JSON format')
@@ -4179,7 +4180,7 @@ program
         try {
             const checker = new (getLLMChecker())();
             const data = await checker.loadOllamaModelData();
-            
+
             if (!data || !data.models) {
                 if (spinner) spinner.fail('No models found in database');
                 else console.error('No models found in database');
@@ -4188,6 +4189,15 @@ program
 
             let models = data.models;
             let originalCount = models.length;
+
+            // Filter by source
+            if (options.source && options.source !== 'all') {
+                const sourceFilter = options.source.toLowerCase();
+                models = models.filter(model => {
+                    const modelSource = (model.source || 'ollama').toLowerCase();
+                    return modelSource === sourceFilter;
+                });
+            }
 
             // Aplicar filtros
             if (options.category) {
@@ -4403,9 +4413,10 @@ program
 
 program
     .command('ai-run')
-    .description('AI-powered model selection and execution')
+    .description('AI-powered model selection and execution (supports Ollama and Hugging Face)')
     .option('-m, --models <models...>', 'Specific models to choose from')
     .option('-c, --category <category>', 'Task category hint (coding, reasoning, multimodal, general, etc.)')
+    .option('--source <source>', 'Model source preference (ollama, huggingface, auto)', 'auto')
     .option('--prompt <prompt>', 'Prompt to run with selected model')
     .option('--policy <file>', 'Explicit calibrated routing policy file (takes precedence over --calibrated)')
     .option(
@@ -4418,12 +4429,12 @@ program
         showAsciiArt('ai-run');
         // Check if Ollama is installed first
         await checkOllamaAndExit();
-        
+
         const AIModelSelector = require('../src/ai/model-selector');
-        
+
         try {
             const spinner = ora('Selecting best model and launching...').start();
-            
+
             const aiSelector = new AIModelSelector();
             const checker = new (getLLMChecker())();
             const systemInfo = await checker.getSystemInfo();
@@ -4440,21 +4451,37 @@ program
                 calibratedOption: options.calibrated
             });
             const calibratedPolicy = routingPreference.calibratedPolicy;
-            
+
             // Get available models or use provided ones
             let candidateModels = options.models;
             let localModels = [];
-            
+
             if (!candidateModels) {
-                spinner.text = 'Getting available Ollama models...';
+                spinner.text = 'Getting available models...';
                 const client = getOllamaClient();
-                
+
                 try {
                     localModels = await client.getLocalModels();
                     candidateModels = localModels.map(m => m.name || m.model);
-                    
+
+                    // Filter by source if specified
+                    if (options.source && options.source !== 'auto') {
+                        const sourceFilter = options.source.toLowerCase();
+                        const ModelDatabase = require('../src/data/model-database');
+                        const db = new ModelDatabase();
+                        await db.initialize();
+
+                        candidateModels = candidateModels.filter(modelId => {
+                            const model = db.getModel(modelId);
+                            const modelSource = (model?.source || 'ollama').toLowerCase();
+                            return modelSource === sourceFilter;
+                        });
+
+                        db.close();
+                    }
+
                     if (candidateModels.length === 0) {
-                        spinner.fail('No Ollama models found');
+                        spinner.fail('No models found');
                         console.log('\nInstall some models first:');
                         console.log('  ollama pull llama2:7b');
                         console.log('  ollama pull mistral:7b');
@@ -4462,7 +4489,7 @@ program
                         return;
                     }
                 } catch (error) {
-                    spinner.fail('Failed to get Ollama models');
+                    spinner.fail('Failed to get models');
                     console.error(chalk.red('Error:'), error.message);
                     return;
                 }
@@ -4634,9 +4661,10 @@ program
 
 program
     .command('sync')
-    .description('Sync the model database from Ollama registry (scrapes all models)')
+    .description('Sync the model database from Ollama and/or Hugging Face registries')
     .option('-f, --force', 'Force full sync even if recent data exists')
     .option('--incremental', 'Only sync new and updated models')
+    .option('--source <source>', 'Source to sync (ollama, huggingface, all)', 'all')
     .option('-q, --quiet', 'Suppress progress output')
     .action(async (options) => {
         if (!options.quiet) showAsciiArt('sync');
@@ -4664,7 +4692,7 @@ program
             if (options.incremental) {
                 result = await syncManager.incrementalSync();
             } else {
-                result = await syncManager.sync({ force: options.force });
+                result = await syncManager.syncSource(options.source, { force: options.force });
             }
 
             if (!options.quiet) {
@@ -4677,6 +4705,47 @@ program
 
         } catch (error) {
             if (spinner) spinner.fail('Sync failed');
+            console.error(chalk.red('Error:'), error.message);
+            if (process.env.DEBUG) console.error(error.stack);
+            process.exit(1);
+        }
+    });
+
+program
+    .command('download <model_id>')
+    .description('Download a Hugging Face model for local execution')
+    .option('--force', 'Force re-download even if already cached')
+    .action(async (modelId, options) => {
+        showAsciiArt('download');
+        const HFDownloader = require('../src/huggingface/hf-downloader');
+
+        const spinner = ora(`Downloading model ${modelId}...`).start();
+
+        try {
+            const downloader = new HFDownloader({
+                onProgress: (info) => {
+                    if (info.phase === 'complete') {
+                        spinner.succeed(info.message);
+                    } else {
+                        spinner.text = info.message;
+                    }
+                },
+                onError: (err) => {
+                    console.error(chalk.yellow('Warning:'), err);
+                }
+            });
+
+            const result = await downloader.download(modelId, { force: options.force });
+
+            if (result) {
+                console.log(chalk.green('\n[OK] Download complete!'));
+                console.log(chalk.gray(`  Path: ${result.path}`));
+                console.log(chalk.gray(`  Size: ${result.totalSizeGB} GB`));
+                console.log(chalk.gray(`  Files: ${result.fileCount}`));
+            }
+
+        } catch (error) {
+            if (spinner) spinner.fail('Download failed');
             console.error(chalk.red('Error:'), error.message);
             if (process.env.DEBUG) console.error(error.stack);
             process.exit(1);
