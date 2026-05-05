@@ -1496,6 +1496,18 @@ class DeterministicModelSelector {
             topCandidates.sort((a, b) => b.score - a.score);
         }
 
+        // Log model selection results
+        if (!silent) {
+            try {
+                const { getLogger } = require('../utils/logger');
+                const logger = getLogger();
+                logger.logModelSelection(category, hardware, topCandidates, topCandidates[0]);
+            } catch (error) {
+                // Silently fail if logging is not configured
+                console.debug('Failed to log model selection:', error.message);
+            }
+        }
+
         return {
             category,
             optimizeFor: optimizationObjective,

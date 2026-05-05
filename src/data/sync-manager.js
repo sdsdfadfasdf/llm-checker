@@ -74,6 +74,7 @@ class SyncManager {
      * Sync Ollama models
      */
     async syncOllama(options = {}) {
+        const startTime = Date.now();
         await this.init();
 
         this.onProgress({ phase: 'start', message: 'Syncing Ollama models...' });
@@ -88,11 +89,29 @@ class SyncManager {
         });
 
         this.db.setLastSyncBySource('ollama', new Date().toISOString());
+        const duration = Date.now() - startTime;
 
         this.onProgress({
             phase: 'complete',
             message: `Ollama sync complete: ${result.models.length} models, ${result.variants.length} variants`
         });
+
+        // Log sync operation results
+        try {
+            const { getLogger } = require('../utils/logger');
+            const logger = getLogger();
+            logger.logSyncOperation('ollama', 'sync', {
+                modelsAdded: result.models.length,
+                modelsUpdated: 0,
+                modelsFailed: 0,
+                totalModels: result.models.length,
+                duration,
+                errors: []
+            });
+        } catch (error) {
+            // Silently fail if logging is not configured
+            console.debug('Failed to log sync operation:', error.message);
+        }
 
         return result;
     }
@@ -101,6 +120,7 @@ class SyncManager {
      * Sync Hugging Face models
      */
     async syncHuggingFace(options = {}) {
+        const startTime = Date.now();
         await this.init();
 
         this.onProgress({ phase: 'start', message: 'Syncing Hugging Face models...' });
@@ -115,11 +135,29 @@ class SyncManager {
         });
 
         this.db.setLastSyncBySource('huggingface', new Date().toISOString());
+        const duration = Date.now() - startTime;
 
         this.onProgress({
             phase: 'complete',
             message: `Hugging Face sync complete: ${result.models.length} models, ${result.variants.length} variants`
         });
+
+        // Log sync operation results
+        try {
+            const { getLogger } = require('../utils/logger');
+            const logger = getLogger();
+            logger.logSyncOperation('huggingface', 'sync', {
+                modelsAdded: result.models.length,
+                modelsUpdated: 0,
+                modelsFailed: 0,
+                totalModels: result.models.length,
+                duration,
+                errors: []
+            });
+        } catch (error) {
+            // Silently fail if logging is not configured
+            console.debug('Failed to log sync operation:', error.message);
+        }
 
         return result;
     }

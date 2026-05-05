@@ -52,6 +52,16 @@ class HardwareDetector {
             this.cache = systemInfo;
             this.cacheTime = Date.now();
 
+            // Log hardware detection results
+            try {
+                const { getLogger } = require('../utils/logger');
+                const logger = getLogger();
+                logger.logHardwareDetectionStructured(systemInfo);
+            } catch (error) {
+                // Silently fail if logging is not configured
+                console.debug('Failed to log hardware detection:', error.message);
+            }
+
             return systemInfo;
         } catch (error) {
             throw new Error(`Failed to detect hardware: ${error.message}`);

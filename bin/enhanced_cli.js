@@ -3274,6 +3274,8 @@ program
     .option('--ram <gb>', 'Custom RAM in GB for simulation (e.g., 32)')
     .option('--cpu <model>', 'Custom CPU model for simulation (e.g., "AMD Ryzen 7 5700X")')
     .option('--vram <gb>', 'Override GPU VRAM in GB for simulation (auto-detected if omitted)')
+    .option('--log-hardware', 'Log hardware detection results')
+    .option('--log-performance', 'Log performance benchmark results')
     .addHelpText(
         'after',
         `
@@ -3298,6 +3300,28 @@ Policy scope:
         try {
             // Use verbose progress unless explicitly disabled
             const verboseEnabled = options.verbose !== false;
+
+            // Enable structured logging if requested
+            if (options.logHardware || options.logPerformance) {
+                const logDir = path.join(os.homedir(), '.llm-checker', 'logs');
+                if (options.logHardware) {
+                    const hwLogPath = path.join(logDir, 'hardware_detection.jsonl');
+                    const logger = getLogger({
+                        structuredLogFile: hwLogPath,
+                        console: false
+                    });
+                    console.log(chalk.gray(`📝 Logging hardware detection to: ${hwLogPath}`));
+                }
+                if (options.logPerformance) {
+                    const perfLogPath = path.join(logDir, 'performance_benchmark.jsonl');
+                    const logger = getLogger({
+                        structuredLogFile: perfLogPath,
+                        console: false
+                    });
+                    console.log(chalk.gray(`📝 Logging performance benchmarks to: ${perfLogPath}`));
+                }
+            }
+
             const checker = new (getLLMChecker())({ verbose: verboseEnabled });
             const policyConfig = options.policy ? loadPolicyConfiguration(options.policy) : null;
 
@@ -3830,6 +3854,7 @@ program
         '--calibrated [file]',
         'Use calibrated routing policy (optional file path; defaults to ~/.llm-checker/calibration-policy.{yaml,yml,json})'
     )
+    .option('--log-results', 'Log model selection results for analysis')
     .addHelpText(
         'after',
         `
@@ -3853,6 +3878,17 @@ Calibrated routing examples:
         showAsciiArt('recommend');
         try {
             const verboseEnabled = options.verbose !== false;
+
+            // Enable structured logging if requested
+            if (options.logResults) {
+                const logPath = path.join(os.homedir(), '.llm-checker', 'logs', 'model_selection.jsonl');
+                const logger = getLogger({
+                    structuredLogFile: logPath,
+                    console: false
+                });
+                console.log(chalk.gray(`📝 Logging results to: ${logPath}`));
+            }
+
             const checker = new (getLLMChecker())({ verbose: verboseEnabled });
 
             // Handle hardware simulation (preset profile or custom flags)
@@ -4666,8 +4702,20 @@ program
     .option('--incremental', 'Only sync new and updated models')
     .option('--source <source>', 'Source to sync (ollama, huggingface, all)', 'all')
     .option('-q, --quiet', 'Suppress progress output')
+    .option('--log-sync', 'Log sync operation results')
     .action(async (options) => {
         if (!options.quiet) showAsciiArt('sync');
+
+        // Enable structured logging if requested
+        if (options.logSync) {
+            const logPath = path.join(os.homedir(), '.llm-checker', 'logs', 'sync_operation.jsonl');
+            const logger = getLogger({
+                structuredLogFile: logPath,
+                console: false
+            });
+            if (!options.quiet) console.log(chalk.gray(`📝 Logging sync operations to: ${logPath}`));
+        }
+
         const SyncManager = require('../src/data/sync-manager');
 
         const spinner = options.quiet ? null : ora('Initializing sync...').start();

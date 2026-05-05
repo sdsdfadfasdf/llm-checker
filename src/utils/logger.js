@@ -7,6 +7,7 @@ class Logger {
         this.level = options.level || process.env.LLM_CHECKER_LOG_LEVEL || 'info';
         this.enableColors = options.colors !== false && !process.env.NO_COLOR;
         this.logFile = options.logFile || null;
+        this.structuredLogFile = options.structuredLogFile || null;
         this.enableConsole = options.console !== false;
         this.enableDebug = options.debug || process.env.DEBUG === '1';
 
@@ -28,6 +29,7 @@ class Logger {
         };
 
         this.setupLogFile();
+        this.setupStructuredLogFile();
     }
 
     setupLogFile() {
@@ -39,6 +41,20 @@ class Logger {
                 } catch (error) {
                     console.warn(`Warning: Could not create log directory: ${error.message}`);
                     this.logFile = null;
+                }
+            }
+        }
+    }
+
+    setupStructuredLogFile() {
+        if (this.structuredLogFile) {
+            const logDir = path.dirname(this.structuredLogFile);
+            if (!fs.existsSync(logDir)) {
+                try {
+                    fs.mkdirSync(logDir, { recursive: true });
+                } catch (error) {
+                    console.warn(`Warning: Could not create structured log directory: ${error.message}`);
+                    this.structuredLogFile = null;
                 }
             }
         }
@@ -177,6 +193,107 @@ class Logger {
         });
     }
 
+    // Structured JSON logging methods
+    logStructured(level, operation, data) {
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            level: level.toUpperCase(),
+            operation: operation,
+            data: data
+        };
+
+        this.writeStructuredLog(logEntry);
+
+        if (this.enableConsole) {
+            console.log(JSON.stringify(logEntry, null, 2));
+        }
+    }
+
+    writeStructuredLog(logEntry) {
+        if (!this.structuredLogFile) return;
+
+        try {
+            fs.appendFileSync(this.structuredLogFile, JSON.stringify(logEntry) + '\n', 'utf8');
+        } catch (error) {
+            console.error('Failed to write structured log:', error.message);
+        }
+    }
+
+    logModelSelection(category, hardware, candidates, selected) {
+        this.logStructured('info', 'model_selection', {
+            category,
+            hardware: {
+                cpu: hardware.cpu?.cores,
+                ram: hardware.memory?.total,
+                gpu: hardware.gpu?.model,
+                vram: hardware.gpu?.vram
+            },
+            candidates_count: candidates.length,
+            selected_model: selected?.meta?.model_identifier,
+            selected_score: selected?.score,
+            all_candidates: candidates.map(c => ({
+                model: c.meta?.model_identifier,
+                score: c.score,
+                quant: c.quant,
+                required_gb: c.requiredGB,
+                est_tps: c.estTPS
+            }))
+        });
+    }
+
+    logHardwareDetectionStructured(hardware) {
+        this.logStructured('info', 'hardware_detection', {
+            cpu: {
+                model: hardware.cpu?.model,
+                cores: hardware.cpu?.cores,
+                architecture: hardware.cpu?.architecture,
+                speed: hardware.cpu?.speed
+            },
+            memory: {
+                total: hardware.memory?.total,
+                available: hardware.memory?.available
+            },
+            gpu: {
+                model: hardware.gpu?.model,
+                vendor: hardware.gpu?.vendor,
+                vram: hardware.gpu?.vram,
+                type: hardware.gpu?.type,
+                unified: hardware.gpu?.unified
+            },
+            acceleration: {
+                cuda: hardware.acceleration?.supports_cuda,
+                rocm: hardware.acceleration?.supports_rocm,
+                metal: hardware.acceleration?.supports_metal,
+                cpu: hardware.acceleration?.supports_cpu
+            }
+        });
+    }
+
+    logPerformanceBenchmark(model, results) {
+        this.logStructured('info', 'performance_benchmark', {
+            model: model,
+            tokens_per_second: results.tokensPerSecond,
+            response_time_ms: results.responseTime,
+            prompt_tokens: results.promptTokens,
+            generated_tokens: results.generatedTokens,
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    logSyncOperation(source, operation, results) {
+        this.logStructured('info', 'sync_operation', {
+            source,
+            operation,
+            timestamp: new Date().toISOString(),
+            models_added: results.modelsAdded || 0,
+            models_updated: results.modelsUpdated || 0,
+            models_failed: results.modelsFailed || 0,
+            total_models: results.totalModels || 0,
+            duration_ms: results.duration,
+            errors: results.errors || []
+        });
+    }
+
     logError(error, context = {}) {
         this.error(error.message, {
             component: context.component || 'Unknown',
@@ -212,9 +329,18 @@ class Logger {
         return this.logFile;
     }
 
+    getStructuredLogFile() {
+        return this.structuredLogFile;
+    }
+
     setLogFile(filePath) {
         this.logFile = filePath;
         this.setupLogFile();
+    }
+
+    setStructuredLogFile(filePath) {
+        this.structuredLogFile = filePath;
+        this.setupStructuredLogFile();
     }
 
     setLevel(level) {

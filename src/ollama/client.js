@@ -568,7 +568,7 @@ class OllamaClient {
             });
             const tokensGenerated = Number(data.eval_count) || 0;
 
-            return {
+            const results = {
                 success: true,
                 responseTime: data.responseTime,
                 tokensPerSecond: data.tokensPerSecond,
@@ -579,6 +579,23 @@ class OllamaClient {
                 evalTime: data.eval_duration ? Math.round(data.eval_duration / 1000000) : null,
                 response: data.response
             };
+
+            // Log performance benchmark results
+            try {
+                const { getLogger } = require('../utils/logger');
+                const logger = getLogger();
+                logger.logPerformanceBenchmark(modelName, {
+                    tokensPerSecond: results.tokensPerSecond,
+                    responseTime: results.responseTime,
+                    promptTokens: 0, // Ollama doesn't separate prompt tokens
+                    generatedTokens: results.tokensGenerated
+                });
+            } catch (error) {
+                // Silently fail if logging is not configured
+                console.debug('Failed to log performance benchmark:', error.message);
+            }
+
+            return results;
         } catch (error) {
             return {
                 success: false,
